@@ -4,11 +4,12 @@
 #include <chrono>
 #include <curl/curl.h>
 #include <mutex>
+#include <shared_mutex>
 #include <nlohmann/json.hpp> // Make sure this library is included and set up
 
-std::mutex dataMutex;          // Mutex for synchronizing access to sharedTimeData
-std::string sharedTimeData;    // Global variable to store the shared time data
-std::mutex fileMutex;          // Mutex for synchronizing file access
+std::shared_mutex dataMutex;  // Shared mutex for synchronizing access to sharedTimeData
+std::string sharedTimeData;   // Global variable to store the shared time data
+std::mutex fileMutex;         // Mutex for synchronizing file access
 
 // This is a callback function used by libcurl for storing fetched data
 size_t WriteCallback(void *contents, size_t size, size_t nmemb, std::string *userp) {
@@ -33,6 +34,7 @@ std::string fetchCurrentTime() {
         // Parse the response to extract the time
         try {
             auto jsonResponse = nlohmann::json::parse(readBuffer);
+            std::cout << "Fetched current time: " << jsonResponse["datetime"] << std::endl;
             return jsonResponse["datetime"];
         } catch(const std::exception& e) {
             std::cerr << "JSON parse error: " << e.what() << '\n';
@@ -49,6 +51,7 @@ void writeTimeDataToFile(const std::string& data) {
     if (file.is_open()) {
         file << data << std::endl;
         file.close();
+        std::cout << "Logged time data to file: " << data << std::endl;
     } else {
         std::cerr << "Unable to open file for writing" << std::endl;
     }
@@ -63,6 +66,7 @@ int getNumberOfLinesInFile() {
     while (std::getline(file, line)) {
         ++lines;
     }
+    std::cout << "Number of lines in file: " << lines << std::endl;
     return lines;
 }
 
@@ -70,14 +74,14 @@ void updateTimeData() {
     while (getNumberOfLinesInFile() < 5) {
         std::string currentTime = fetchCurrentTime();
 
-        // Critical section 01
+        // Critical section 01: Writing data
         {
-            std::lock_guard<std::mutex> guard(dataMutex);
+            std::unique_lock<std::shared_mutex> writeLock(dataMutex);
             sharedTimeData = currentTime;
+            std::cout << "Updated sharedTimeData: " << currentTime << std::endl;
         }
 
         writeTimeDataToFile(currentTime);
-
         std::this_thread::sleep_for(std::chrono::seconds(6));
     }
 }
@@ -87,9 +91,9 @@ void displayTimeData() {
     while (getNumberOfLinesInFile() < 5) {
         std::string currentTime;
 
-        // Critical section 02
+        // Critical section 02: Reading data
         {
-            std::lock_guard<std::mutex> guard(dataMutex);
+            std::shared_lock<std::shared_mutex> readLock(dataMutex);
             currentTime = sharedTimeData;
         }
 
@@ -101,11 +105,13 @@ void displayTimeData() {
 }
 
 int main() {
+    std::cout << "Starting time updater and displayer threads..." << std::endl;
     std::thread timeUpdater(updateTimeData);
     std::thread timeDisplayer(displayTimeData);
 
     timeUpdater.join();
     timeDisplayer.join();
+    std::cout << "Time updater and displayer threads have finished." << std::endl;
 
     return 0;
 }
